@@ -198,6 +198,15 @@ Decided, and not to be re-litigated:
   Either way `db::cancel_cost` says what the cancel cost: SQL Server's session
   reset, Postgres's aborted transaction, a SQLite write's rolled-back
   transaction.
+- **A root certificate holds Postgres's `require` to it.** libpq checks one on
+  any encrypted connection, so a URL or the `PG*` variables stating `require`
+  with one become `verify-ca` as they are read (`SslMode::with_root_certificate`),
+  and the profile says what it does. Only those paths: a `require` already saved
+  beside a certificate, or a profile the `PG*` variables match, is not rewritten
+  and still checks nothing. `prefer` with one stays `prefer`, its certificate
+  unread, since `verify-ca` would take away its plaintext fallback. The form
+  keeps a path only under a mode that reads it, and the importers drop one read
+  from their own fields under `require` and leave a note.
 - **Postgres's side session** (describe, and the check before a stop at the
   limit) opens with a 2-second `statement_timeout`, and neither ever blocks
   the run on it: a describe waits its turn there on a thread of its own, and a

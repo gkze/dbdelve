@@ -479,7 +479,7 @@ pub fn config_from_url(url: &str) -> Result<ServerConfig, String> {
         database,
         user,
         password,
-        sslmode,
+        sslmode: sslmode.with_root_certificate(root_certificate.as_deref()),
         root_certificate,
         // A URL has nowhere to say it; the form is where it is set.
         statement_timeout: 0,
@@ -2266,6 +2266,26 @@ mod tests {
         assert_eq!(config.root_certificate.as_deref(), Some("/tmp/rds.pem"));
         assert_eq!(config.port, Some(5433));
         assert_eq!(config.user, "someone");
+    }
+
+    #[test]
+    fn a_url_pinning_a_root_certificate_under_require_is_held_to_it() {
+        // Either order: the query is read whole before either key is acted on.
+        for query in [
+            "sslmode=require&sslrootcert=/nonexistent/ca.pem",
+            "sslrootcert=/nonexistent/ca.pem&sslmode=require",
+        ] {
+            let url = format!("postgresql://someone@db.example.test/dbdelve_test?{query}");
+            let config = config_from_url(&url).unwrap();
+            assert_eq!(config.sslmode, SslMode::VerifyCa, "{url}");
+            // A connector for `require` never opens the file, so this fails if
+            // the pin stops reaching the verifier.
+            assert!(tls::connector(config.sslmode, config.root_certificate.as_deref()).is_err());
+        }
+
+        let blank = "postgresql://someone@db.example.test/dbdelve_test\
+                     ?sslmode=require&sslrootcert=";
+        assert_eq!(config_from_url(blank).unwrap().sslmode, SslMode::Require);
     }
 
     #[test]

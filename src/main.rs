@@ -103,10 +103,18 @@ use workspace::Workspace;
 const TRAFFIC_LIGHT_DIAMETER: f32 = 14.0;
 
 fn connection_config_from_environment() -> Result<Option<ConnectionConfig>, String> {
-    let host = std::env::var("PGHOST").ok();
-    let port = std::env::var("PGPORT").ok();
-    let database = std::env::var("PGDATABASE").ok();
-    let user = std::env::var("PGUSER").ok();
+    connection_config_from(|name| std::env::var(name).ok())
+}
+
+/// Takes its variables as a function so a test need not set the process's own,
+/// which every other test thread shares.
+fn connection_config_from(
+    variable: impl Fn(&str) -> Option<String>,
+) -> Result<Option<ConnectionConfig>, String> {
+    let host = variable("PGHOST");
+    let port = variable("PGPORT");
+    let database = variable("PGDATABASE");
+    let user = variable("PGUSER");
 
     if [&host, &port, &database, &user]
         .iter()
@@ -133,12 +141,11 @@ fn connection_config_from_environment() -> Result<Option<ConnectionConfig>, Stri
         ));
     };
 
-    let sslmode = match std::env::var("PGSSLMODE") {
-        Ok(sslmode) => SslMode::parse(&sslmode)?,
-        Err(_) => SslMode::default(),
+    let sslmode = match variable("PGSSLMODE") {
+        Some(sslmode) => SslMode::parse(&sslmode)?,
+        None => SslMode::default(),
     };
-    let root_certificate = std::env::var("PGSSLROOTCERT")
-        .ok()
+    let root_certificate = variable("PGSSLROOTCERT")
         .map(|path| path.trim().to_string())
         .filter(|path| !path.is_empty());
 
@@ -157,8 +164,8 @@ fn connection_config_from_environment() -> Result<Option<ConnectionConfig>, Stri
         port,
         database,
         user,
-        password: std::env::var("PGPASSWORD").unwrap_or_default(),
-        sslmode,
+        password: variable("PGPASSWORD").unwrap_or_default(),
+        sslmode: sslmode.with_root_certificate(root_certificate.as_deref()),
         root_certificate,
         // No `PG*` variable means it, and dbdelve is not inventing one.
         statement_timeout: 0,
@@ -430,4 +437,52 @@ pub(crate) fn app_menus(imports_rows: bool) -> Vec<Menu> {
             ],
         },
     ]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn tls_from_variables(extra: &[(&str, &str)]) -> (SslMode, Option<String>) {
+        let variables = [
+            ("PGHOST", "db.example.test"),
+            ("PGDATABASE", "dbdelve_test"),
+            ("PGUSER", "someone"),
+        ];
+        let config = connection_config_from(|name| {
+            variables
+                .iter()
+                .chain(extra)
+                .find(|(variable, _)| *variable == name)
+                .map(|(_, value)| value.to_string())
+        })
+        .unwrap()
+        .unwrap();
+        let server = config.server().unwrap();
+        (server.sslmode, server.root_certificate.clone())
+    }
+
+    #[test]
+    fn the_environment_pinning_a_root_certificate_under_require_is_held_to_it() {
+        assert_eq!(
+            tls_from_variables(&[("PGSSLMODE", "require"), ("PGSSLROOTCERT", "/ca.pem")]),
+            (SslMode::VerifyCa, Some("/ca.pem".to_string()))
+        );
+        assert_eq!(
+            tls_from_variables(&[("PGSSLMODE", "require"), ("PGSSLROOTCERT", "  ")]),
+            (SslMode::Require, None)
+        );
+        assert_eq!(
+            tls_from_variables(&[("PGSSLMODE", "require")]),
+            (SslMode::Require, None)
+        );
+    }
+
+    #[test]
+    fn the_environment_leaves_a_stronger_mode_beside_a_root_certificate_alone() {
+        assert_eq!(
+            tls_from_variables(&[("PGSSLMODE", "verify-full"), ("PGSSLROOTCERT", "/ca.pem")]).0,
+            SslMode::VerifyFull
+        );
+    }
 }

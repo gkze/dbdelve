@@ -134,6 +134,21 @@ impl SslMode {
     pub fn checks_certificate(self) -> bool {
         matches!(self, Self::VerifyCa | Self::VerifyFull)
     }
+
+    /// The mode a Postgres connection stating this one beside a root
+    /// certificate is held to. libpq checks a named root certificate on any
+    /// encrypted connection, so a pin must not end up encrypted to anybody who
+    /// answers.
+    ///
+    /// ponytail: `prefer` stays as it is, its certificate unread, because
+    /// `verify-ca` would take away its plaintext fallback. Holding it to the
+    /// certificate needs a verifier of its own, or refusing the pair.
+    pub fn with_root_certificate(self, root_certificate: Option<&str>) -> Self {
+        match (self, root_certificate) {
+            (Self::Require, Some(_)) => Self::VerifyCa,
+            _ => self,
+        }
+    }
 }
 
 /// The connector for a mode, or `None` for `disable`, which never negotiates.
@@ -171,6 +186,7 @@ pub fn connector(
             }))
             .with_no_client_auth(),
         // libpq's `prefer` and `require` encrypt without asking who answered.
+        // A pinned `require` never gets here: `with_root_certificate`.
         SslMode::Prefer | SslMode::Require => versions
             .dangerous()
             .with_custom_certificate_verifier(Arc::new(TrustAnyServer { provider }))
@@ -415,6 +431,18 @@ mod tests {
         assert!(!SslMode::Require.checks_certificate());
         assert!(SslMode::VerifyCa.checks_certificate());
         assert!(SslMode::VerifyFull.checks_certificate());
+    }
+
+    #[test]
+    fn a_root_certificate_holds_require_to_it_and_changes_no_other_mode() {
+        for mode in SslMode::ALL {
+            assert_eq!(mode.with_root_certificate(None), mode, "{mode:?}");
+            let expected = match mode {
+                SslMode::Require => SslMode::VerifyCa,
+                other => other,
+            };
+            assert_eq!(mode.with_root_certificate(Some("/ca.pem")), expected);
+        }
     }
 
     #[test]
